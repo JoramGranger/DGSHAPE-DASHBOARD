@@ -1,67 +1,568 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { Activity, CheckCircle, Clock, Layers, AlertTriangle } from 'lucide-react'
-import Navigation from '@/components/Navigation'
+import { useState, useEffect, useMemo } from 'react'
+import { Calendar, Clock, Search, Filter, ChevronLeft, ChevronRight, Download, FileText, ArrowLeft, Activity, CheckCircle, Layers, AlertTriangle } from 'lucide-react'
+import { format, parseISO, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear, isWithinInterval } from 'date-fns'
+import Link from 'next/link'
+import { loadCSVData } from '@/lib/dataLoader'
 import MetricCard from '@/components/MetricCard'
-import { JobTrendsChart, UtilizationChart, MaterialBreakdownChart } from '@/components/Charts'
-import TimeRangeSelector from '@/components/TimeRangeSelector'
-import RecentJobs from '@/components/RecentJobs'
-import { loadCSVData, processDataForTimeRange } from '@/lib/dataLoader'
-import type { TimeRange, DailyData, JobSession } from '@/types/dental'
+import type { JobSession } from '@/types/dental'
+import { Printer } from 'lucide-react'
 
-export default function DashboardPage() {
-  const [timeRange, setTimeRange] = useState<TimeRange>('daily')
-  const [dashboardData, setDashboardData] = useState<any>(null)
+type FilterType = 'date' | 'week' | 'month' | 'year'
+type SortField = 'session_start' | 'material_type' | 'status' | 'duration_minutes'
+type SortDirection = 'asc' | 'desc'
+
+interface JobFilters {
+  type: FilterType
+  date: string
+  materialType: string
+  status: string
+  search: string
+}
+
+interface TimelineSummary {
+  totalJobs: number
+  completedJobs: number
+  incompleteJobs: number
+  successRate: number
+  totalDuration: number
+  avgDuration: number
+  materialTypes: number
+  topMaterial: string
+}
+
+// print function
+
+const generatePDFReport = (
+  timelineSummary: TimelineSummary,
+  filteredJobs: JobSession[],
+  filterType: FilterType,
+  filterLabel: string
+) => {
+  const printWindow = window.open('', '_blank')
+  if (!printWindow) return
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>DGSHAPE Job Report - ${filterLabel}</title>
+      <style>
+        @page { margin: 0.5in; }
+        body { 
+          font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; 
+          line-height: 1.4; 
+          color: #334155;
+          margin: 0;
+          padding: 20px;
+        }
+        .header { 
+          text-align: center; 
+          margin-bottom: 30px; 
+          border-bottom: 2px solid #e2e8f0;
+          padding-bottom: 20px;
+        }
+        .company-title { 
+          font-size: 28px; 
+          font-weight: bold; 
+          color: #0f172a;
+          margin: 0;
+        }
+        .report-title { 
+          font-size: 18px; 
+          color: #64748b; 
+          margin: 5px 0 0 0;
+        }
+        .period-title { 
+          font-size: 16px; 
+          color: #475569; 
+          margin: 10px 0 0 0;
+        }
+        .summary-grid { 
+          display: grid; 
+          grid-template-columns: repeat(4, 1fr); 
+          gap: 20px; 
+          margin: 30px 0;
+        }
+        .metric-card { 
+          border: 1px solid #e2e8f0; 
+          border-radius: 8px; 
+          padding: 20px; 
+          text-align: center;
+          background: #f8fafc;
+        }
+        .metric-label { 
+          font-size: 12px; 
+          color: #64748b; 
+          text-transform: uppercase; 
+          font-weight: 600;
+          margin-bottom: 8px;
+        }
+        .metric-value { 
+          font-size: 24px; 
+          font-weight: bold; 
+          color: #0f172a;
+          font-family: 'JetBrains Mono', monospace;
+        }
+        .metric-subtitle { 
+          font-size: 11px; 
+          color: #64748b; 
+          margin-top: 4px;
+        }
+        .jobs-section { 
+          margin-top: 40px;
+        }
+        .section-title { 
+          font-size: 16px; 
+          font-weight: 600; 
+          color: #0f172a;
+          margin-bottom: 15px;
+          border-bottom: 1px solid #e2e8f0;
+          padding-bottom: 8px;
+        }
+        table { 
+          width: 100%; 
+          border-collapse: collapse; 
+          font-size: 11px;
+          margin-top: 10px;
+        }
+        th { 
+          background: #f1f5f9; 
+          padding: 8px 6px; 
+          text-align: left; 
+          font-weight: 600;
+          color: #475569;
+          text-transform: uppercase;
+          font-size: 10px;
+          border: 1px solid #e2e8f0;
+        }
+        td { 
+          padding: 6px; 
+          border: 1px solid #e2e8f0;
+          font-size: 10px;
+        }
+        tr:nth-child(even) { background: #f8fafc; }
+        .status-completed { 
+          background: #dcfce7; 
+          color: #166534; 
+          padding: 2px 6px; 
+          border-radius: 4px; 
+          font-weight: 500;
+          font-size: 9px;
+        }
+        .status-incomplete { 
+          background: #fef2f2; 
+          color: #dc2626; 
+          padding: 2px 6px; 
+          border-radius: 4px; 
+          font-weight: 500;
+          font-size: 9px;
+        }
+        .status-progress { 
+          background: #dbeafe; 
+          color: #1d4ed8; 
+          padding: 2px 6px; 
+          border-radius: 4px; 
+          font-weight: 500;
+          font-size: 9px;
+        }
+        .material-badge {
+          background: #eff6ff;
+          color: #1d4ed8;
+          padding: 2px 6px;
+          border-radius: 4px;
+          font-size: 9px;
+          font-weight: 500;
+        }
+        .footer { 
+          margin-top: 40px; 
+          text-align: center; 
+          color: #94a3b8; 
+          font-size: 10px;
+          border-top: 1px solid #e2e8f0;
+          padding-top: 15px;
+        }
+        @media print {
+          .metric-card { break-inside: avoid; }
+          table { page-break-inside: auto; }
+          tr { page-break-inside: avoid; page-break-after: auto; }
+        }
+      </style>
+    </head>
+    <body>
+      <div class="header">
+        <h1 class="company-title">DGSHAPE Analytics</h1>
+        <p class="report-title">Dental Machine Performance Report</p>
+        <p class="period-title">${filterLabel}</p>
+      </div>
+
+      <div class="summary-grid">
+        <div class="metric-card">
+          <div class="metric-label">Total Jobs</div>
+          <div class="metric-value">${timelineSummary.totalJobs.toLocaleString()}</div>
+          <div class="metric-subtitle">${filterType} manufacturing sessions</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Success Rate</div>
+          <div class="metric-value">${timelineSummary.successRate.toFixed(1)}%</div>
+          <div class="metric-subtitle">${timelineSummary.completedJobs} completed, ${timelineSummary.incompleteJobs} failed</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Average Duration</div>
+          <div class="metric-value">${timelineSummary.avgDuration.toFixed(1)} min</div>
+          <div class="metric-subtitle">Total: ${(timelineSummary.totalDuration / 60).toFixed(1)} hours</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Materials Used</div>
+          <div class="metric-value">${timelineSummary.materialTypes}</div>
+          <div class="metric-subtitle">Top: ${timelineSummary.topMaterial}</div>
+        </div>
+      </div>
+
+      <div class="jobs-section">
+        <h2 class="section-title">Job Details (${filteredJobs.length} jobs)</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Date & Time</th>
+              <th>Session ID</th>
+              <th>Material</th>
+              <th>Color</th>
+              <th>Duration</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${filteredJobs.slice(0, 50).map(job => `
+              <tr>
+                <td>
+                  ${format(parseISO(job.start_date), 'MMM dd, yyyy')}<br>
+                  <span style="font-family: monospace; color: #64748b;">
+                    ${format(parseISO(job.session_start || job.start_date), 'HH:mm')}
+                  </span>
+                </td>
+                <td style="font-family: monospace;">#${job.session_id}</td>
+                <td>
+                  ${job.material_type ? 
+                    `<span class="material-badge">${job.material_type}</span>` : 
+                    'Unknown'
+                  }
+                </td>
+                <td>${job.material_color || 'N/A'}</td>
+                <td style="text-align: right; font-family: monospace;">
+                  ${job.duration_minutes ? `${job.duration_minutes.toFixed(1)} min` : 'N/A'}
+                </td>
+                <td style="text-align: center;">
+                  <span class="status-${job.status.toLowerCase().replace(' ', '')}">${job.status}</span>
+                </td>
+              </tr>
+            `).join('')}
+            ${filteredJobs.length > 50 ? `
+              <tr>
+                <td colspan="6" style="text-align: center; font-style: italic; color: #64748b; padding: 15px;">
+                  Showing first 50 of ${filteredJobs.length} jobs. Full data available in CSV export.
+                </td>
+              </tr>
+            ` : ''}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="footer">
+        <p>Generated on ${new Date().toLocaleDateString('en-US', { 
+          year: 'numeric', 
+          month: 'long', 
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        })}</p>
+        <p>DGSHAPE Dental Machine Analytics Dashboard</p>
+      </div>
+    </body>
+    </html>
+  `
+
+  printWindow.document.write(html)
+  printWindow.document.close()
+  
+  // Wait for content to load then trigger print
+  setTimeout(() => {
+    printWindow.print()
+    printWindow.close()
+  }, 500)
+}
+
+
+// print function
+
+const ITEMS_PER_PAGE = 25
+
+export default function JobsPage() {
+  const [jobs, setJobs] = useState<JobSession[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [rawData, setRawData] = useState<{ dailyData: DailyData[], jobSessions: JobSession[] } | null>(null)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [sortField, setSortField] = useState<SortField>('session_start')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  
+  const [filters, setFilters] = useState<JobFilters>({
+    type: 'date',
+    date: new Date().toISOString().split('T')[0], // Today
+    materialType: '',
+    status: '',
+    search: ''
+  })
 
   useEffect(() => {
-    loadData()
+    loadJobs()
   }, [])
 
-  useEffect(() => {
-    if (rawData) {
-      processData()
-    }
-  }, [timeRange, rawData])
-
-  const loadData = async () => {
+  const loadJobs = async () => {
     setLoading(true)
-    setError(null)
-
     try {
-      const { dailyData, jobSessions, error } = await loadCSVData()
-      
+      const { jobSessions, error } = await loadCSVData()
       if (error) {
-        setError(error)
-        // Fall back to sample data if CSV files not found
-        setRawData(generateFallbackData())
+        // Use fallback data if CSV not found
+        setJobs(generateFallbackJobs())
       } else {
-        setRawData({ dailyData, jobSessions })
+        setJobs(jobSessions)
       }
     } catch (err) {
-      setError('Failed to load dashboard data')
-      setRawData(generateFallbackData())
+      setJobs(generateFallbackJobs())
     } finally {
       setLoading(false)
     }
   }
 
-  const processData = () => {
-    if (!rawData) return
+  // Calculate timeline summary
+  const timelineSummary = useMemo((): TimelineSummary => {
+    if (!filters.date) {
+      return {
+        totalJobs: 0,
+        completedJobs: 0,
+        incompleteJobs: 0,
+        successRate: 0,
+        totalDuration: 0,
+        avgDuration: 0,
+        materialTypes: 0,
+        topMaterial: 'N/A'
+      }
+    }
 
-    try {
-      const processed = processDataForTimeRange(
-        rawData.dailyData, 
-        rawData.jobSessions, 
-        timeRange
+    const filterDate = parseISO(filters.date)
+    const timelineJobs = jobs.filter(job => {
+      const jobDate = parseISO(job.start_date)
+      
+      switch (filters.type) {
+        case 'date':
+          return format(jobDate, 'yyyy-MM-dd') === filters.date
+        case 'week':
+          return isWithinInterval(jobDate, {
+            start: startOfWeek(filterDate),
+            end: endOfWeek(filterDate)
+          })
+        case 'month':
+          return isWithinInterval(jobDate, {
+            start: startOfMonth(filterDate),
+            end: endOfMonth(filterDate)
+          })
+        case 'year':
+          return isWithinInterval(jobDate, {
+            start: startOfYear(filterDate),
+            end: endOfYear(filterDate)
+          })
+        default:
+          return true
+      }
+    })
+
+    const completedJobs = timelineJobs.filter(job => job.status === 'Completed').length
+    const incompleteJobs = timelineJobs.filter(job => job.status === 'Incomplete').length
+    const totalDuration = timelineJobs.reduce((sum, job) => sum + (job.duration_minutes || 0), 0)
+    
+    // Material analysis
+    const materialCounts = new Map<string, number>()
+    timelineJobs.forEach(job => {
+      if (job.material_type) {
+        const current = materialCounts.get(job.material_type) || 0
+        materialCounts.set(job.material_type, current + 1)
+      }
+    })
+
+    const topMaterial = Array.from(materialCounts.entries())
+      .sort(([,a], [,b]) => b - a)[0]?.[0] || 'N/A'
+
+    return {
+      totalJobs: timelineJobs.length,
+      completedJobs,
+      incompleteJobs,
+      successRate: timelineJobs.length > 0 ? (completedJobs / timelineJobs.length) * 100 : 0,
+      totalDuration,
+      avgDuration: timelineJobs.length > 0 ? totalDuration / timelineJobs.length : 0,
+      materialTypes: materialCounts.size,
+      topMaterial
+    }
+  }, [jobs, filters.type, filters.date])
+
+  // Filter and sort jobs
+  const filteredAndSortedJobs = useMemo(() => {
+    let filtered = jobs
+
+    // Date/time filtering
+    if (filters.date) {
+      const filterDate = parseISO(filters.date)
+      filtered = filtered.filter(job => {
+        const jobDate = parseISO(job.start_date)
+        
+        switch (filters.type) {
+          case 'date':
+            return format(jobDate, 'yyyy-MM-dd') === filters.date
+          case 'week':
+            return isWithinInterval(jobDate, {
+              start: startOfWeek(filterDate),
+              end: endOfWeek(filterDate)
+            })
+          case 'month':
+            return isWithinInterval(jobDate, {
+              start: startOfMonth(filterDate),
+              end: endOfMonth(filterDate)
+            })
+          case 'year':
+            return isWithinInterval(jobDate, {
+              start: startOfYear(filterDate),
+              end: endOfYear(filterDate)
+            })
+          default:
+            return true
+        }
+      })
+    }
+
+    // Material type filtering
+    if (filters.materialType) {
+      filtered = filtered.filter(job => 
+        job.material_type?.toLowerCase().includes(filters.materialType.toLowerCase())
       )
-      setDashboardData(processed)
-    } catch (err) {
-      console.error('Error processing data:', err)
-      setError('Failed to process dashboard data')
+    }
+
+    // Status filtering
+    if (filters.status) {
+      filtered = filtered.filter(job => job.status === filters.status)
+    }
+
+    // Search filtering
+    if (filters.search) {
+      const searchLower = filters.search.toLowerCase()
+      filtered = filtered.filter(job =>
+        job.material_type?.toLowerCase().includes(searchLower) ||
+        job.material_color?.toLowerCase().includes(searchLower) ||
+        job.status.toLowerCase().includes(searchLower) ||
+        job.session_id.toString().includes(searchLower)
+      )
+    }
+
+    // Sorting
+    filtered.sort((a, b) => {
+      let aValue: any = a[sortField]
+      let bValue: any = b[sortField]
+
+      if (sortField === 'session_start') {
+        aValue = new Date(a.session_start || a.start_date).getTime()
+        bValue = new Date(b.session_start || b.start_date).getTime()
+      }
+
+      if (aValue < bValue) return sortDirection === 'asc' ? -1 : 1
+      if (aValue > bValue) return sortDirection === 'asc' ? 1 : -1
+      return 0
+    })
+
+    return filtered
+  }, [jobs, filters, sortField, sortDirection])
+
+  // Pagination
+  const totalPages = Math.ceil(filteredAndSortedJobs.length / ITEMS_PER_PAGE)
+  const startIndex = (currentPage - 1) * ITEMS_PER_PAGE
+  const endIndex = startIndex + ITEMS_PER_PAGE
+  const currentJobs = filteredAndSortedJobs.slice(startIndex, endIndex)
+
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortField(field)
+      setSortDirection('asc')
+    }
+    setCurrentPage(1)
+  }
+
+  const handleFilterChange = (key: keyof JobFilters, value: string) => {
+    setFilters(prev => ({ ...prev, [key]: value }))
+    setCurrentPage(1)
+  }
+
+  const resetFilters = () => {
+    setFilters({
+      type: 'date',
+      date: new Date().toISOString().split('T')[0],
+      materialType: '',
+      status: '',
+      search: ''
+    })
+    setCurrentPage(1)
+  }
+
+  const exportToCSV = () => {
+    const headers = ['Session ID', 'Date', 'Time', 'Material Type', 'Material Color', 'Status', 'Duration (min)']
+    const csvContent = [
+      headers.join(','),
+      ...filteredAndSortedJobs.map(job => [
+        job.session_id,
+        job.start_date,
+        format(parseISO(job.session_start || job.start_date), 'HH:mm'),
+        job.material_type || '',
+        job.material_color || '',
+        job.status,
+        job.duration_minutes?.toFixed(1) || ''
+      ].join(','))
+    ].join('\n')
+
+    const blob = new Blob([csvContent], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `jobs_${filters.type}_${filters.date}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  const getFilterLabel = () => {
+    if (!filters.date) return ''
+    const date = parseISO(filters.date)
+    
+    switch (filters.type) {
+      case 'week':
+        return `Week of ${format(startOfWeek(date), 'MMM dd, yyyy')}`
+      case 'month':
+        return format(date, 'MMMM yyyy')
+      case 'year':
+        return format(date, 'yyyy')
+      default:
+        return format(date, 'MMM dd, yyyy')
+    }
+  }
+
+  const getTimelineTitle = () => {
+    switch (filters.type) {
+      case 'week':
+        return 'Weekly Summary'
+      case 'month':
+        return 'Monthly Summary'
+      case 'year':
+        return 'Yearly Summary'
+      default:
+        return 'Daily Summary'
     }
   }
 
@@ -70,17 +571,13 @@ export default function DashboardPage() {
       <div className="min-h-screen p-6 bg-gradient-to-br from-slate-50 via-white to-slate-100">
         <div className="max-w-7xl mx-auto">
           <div className="animate-pulse space-y-6">
-            <div className="h-8 bg-slate-200 rounded w-1/3"></div>
+            <div className="h-8 bg-slate-200 rounded w-1/4"></div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
               {Array.from({ length: 4 }).map((_, i) => (
                 <div key={i} className="h-32 bg-slate-200 rounded-xl"></div>
               ))}
             </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="h-80 bg-slate-200 rounded-xl"></div>
-              ))}
-            </div>
+            <div className="h-64 bg-slate-200 rounded"></div>
           </div>
         </div>
       </div>
@@ -89,227 +586,425 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen p-6 bg-gradient-to-br from-slate-50 via-white to-slate-100">
-      <div className="max-w-7xl mx-auto space-y-8">
+      <div className="max-w-7xl mx-auto space-y-6">
         
-        {/* Header */}
+        {/* Header with Back Button */}
         <header className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-4xl font-bold text-slate-900 text-shadow">
-                DGSHAPE Analytics
-              </h1>
-              <p className="text-slate-600 text-lg mt-2">
-                Executive Performance Dashboard
-              </p>
-            </div>
-            <div className="text-right">
-              <div className="text-sm text-slate-500">Last Updated</div>
-              <div className="font-mono text-slate-700">
-                {new Date().toLocaleDateString('en-US', { 
-                  month: 'short', 
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit'
-                })}
-              </div>
-            </div>
-          </div>
-          
-          {/* Navigation */}
-          <Navigation />
-          
-          <TimeRangeSelector 
-            activeRange={timeRange}
-            onRangeChange={setTimeRange}
-          />
-        </header>
-
-        {/* Error Banner */}
-        {error && (
-          <div className="dashboard-card bg-amber-50 border-amber-200">
-            <div className="flex items-center space-x-2 text-amber-700">
-              <AlertTriangle className="w-5 h-5" />
-              <span className="font-medium">Data Loading Notice:</span>
-            </div>
-            <p className="text-sm text-amber-600 mt-2">
-              {error}. Showing sample data for demonstration.
-            </p>
-            <p className="text-xs text-amber-600 mt-1">
-              Place your CSV files in <code className="bg-amber-100 px-1 rounded">public/data/</code> folder to load real data.
-            </p>
-          </div>
+  <div className="flex items-center justify-between">
+    <div className="flex items-center space-x-4">
+      <div className="border-l border-slate-300 pl-4">
+        <h1 className="text-4xl font-bold text-slate-900 text-shadow">
+          Job Management
+        </h1>
+        <p className="text-slate-600 text-lg mt-2">
+          Filter and manage dental machine jobs
+        </p>
+      </div>
+    </div>
+    
+    <div className="flex items-center space-x-3">
+      <button
+        onClick={() => generatePDFReport(
+          timelineSummary,
+          filteredAndSortedJobs,
+          filters.type,
+          getFilterLabel()
         )}
+        className="btn-primary flex items-center space-x-2"
+        disabled={timelineSummary.totalJobs === 0}
+      >
+        <Printer className="w-4 h-4" />
+        <span>Print PDF</span>
+      </button>
+      
+      <button
+        onClick={exportToCSV}
+        className="btn-primary flex items-center space-x-2"
+      >
+        <Download className="w-4 h-4" />
+        <span>Export CSV</span>
+      </button>
+    </div>
+  </div>
+</header>
 
-        {/* Key Metrics */}
-        {dashboardData && (
-          <>
-            <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        {/* Timeline Summary Cards */}
+        {filters.date && (
+          <section className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-semibold text-slate-800">
+                {getTimelineTitle()} - {getFilterLabel()}
+              </h2>
+              {timelineSummary.totalJobs === 0 && (
+                <div className="flex items-center space-x-2 text-amber-600">
+                  <AlertTriangle className="w-4 h-4" />
+                  <span className="text-sm">No jobs found for this period</span>
+                </div>
+              )}
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
               <MetricCard
                 title="Total Jobs"
-                value={dashboardData.totalJobs}
-                subtitle="Manufacturing sessions"
-                trend={2.5}
+                value={timelineSummary.totalJobs}
+                subtitle={`${filters.type} jobs`}
                 icon={<Activity className="w-5 h-5 text-blue-600" />}
                 className="animate-slide-up"
               />
               
               <MetricCard
                 title="Success Rate"
-                value={`${dashboardData.successRate.toFixed(1)}%`}
-                subtitle="Completion percentage"
-                trend={0.3}
+                value={`${timelineSummary.successRate.toFixed(1)}%`}
+                subtitle={`${timelineSummary.completedJobs} completed, ${timelineSummary.incompleteJobs} failed`}
+                trend={timelineSummary.successRate >= 95 ? 2.1 : timelineSummary.successRate >= 90 ? 0 : -1.5}
                 icon={<CheckCircle className="w-5 h-5 text-green-600" />}
                 className="animate-slide-up"
               />
               
               <MetricCard
-                title="Utilization"
-                value={`${dashboardData.utilizationHours.toFixed(1)}h`}
-                subtitle="Machine productive time"
-                trend={1.2}
+                title="Average Duration"
+                value={`${timelineSummary.avgDuration.toFixed(1)} min`}
+                subtitle={`Total: ${(timelineSummary.totalDuration / 60).toFixed(1)} hours`}
                 icon={<Clock className="w-5 h-5 text-amber-600" />}
                 className="animate-slide-up"
               />
               
               <MetricCard
-                title="Material Types"
-                value={dashboardData.materialTypes}
-                subtitle="Different materials used"
-                trend={0}
+                title="Materials Used"
+                value={timelineSummary.materialTypes}
+                subtitle={`Top: ${timelineSummary.topMaterial}`}
                 icon={<Layers className="w-5 h-5 text-slate-600" />}
                 className="animate-slide-up"
               />
-            </section>
-
-            {/* Charts Grid */}
-            <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <JobTrendsChart data={dashboardData.chartData} />
-              <UtilizationChart data={dashboardData.chartData} />
-            </section>
-
-            {/* Additional Charts */}
-            <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <MaterialBreakdownChart data={dashboardData.materialBreakdown} />
-              
-              <div className="dashboard-card">
-                <div className="mb-4">
-                  <h3 className="text-lg font-semibold text-slate-800">Performance Summary</h3>
-                  <p className="text-sm text-slate-500">Key operational metrics</p>
-                </div>
-                
-                <div className="space-y-6">
-                  <div className="flex justify-between items-center">
-                    <span className="text-slate-600">Average Job Duration</span>
-                    <span className="number-small">{dashboardData.avgDuration.toFixed(1)} min</span>
-                  </div>
-                  
-                  <div className="flex justify-between items-center">
-                    <span className="text-slate-600">Peak Operating Hour</span>
-                    <span className="number-small">{String(dashboardData.peakHour).padStart(2, '0')}:00</span>
-                  </div>
-                  
-                  <div className="flex justify-between items-center">
-                    <span className="text-slate-600">Error Incidents</span>
-                    <span className="font-mono text-xl font-medium text-red-600">{dashboardData.errorCount}</span>
-                  </div>
-                  
-                  <div className="pt-4 border-t border-slate-200">
-                    <div className="flex items-center space-x-2 mb-2">
-                      <CheckCircle className="w-4 h-4 text-green-600" />
-                      <span className="text-sm text-green-600 font-medium">Excellent Performance</span>
-                    </div>
-                    <p className="text-sm text-slate-600">
-                      System operating at peak efficiency with {timeRange} view showing consistent productivity
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            {/* Recent Jobs Table */}
-            <section>
-              <RecentJobs sessions={dashboardData.recentSessions} />
-            </section>
-          </>
+            </div>
+          </section>
         )}
 
-        {/* Data Integration Instructions */}
-        <section className="dashboard-card bg-blue-50 border-blue-200">
-          <div className="mb-4">
-            <h3 className="text-lg font-semibold text-blue-800">CSV Data Integration</h3>
-            <p className="text-sm text-blue-600">How to load your processed dental machine data</p>
+        {/* Filters */}
+        <div className="dashboard-card space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-slate-800 flex items-center space-x-2">
+              <Filter className="w-5 h-5" />
+              <span>Filters</span>
+            </h3>
+            <button
+              onClick={resetFilters}
+              className="text-sm text-slate-500 hover:text-slate-700"
+            >
+              Reset Filters
+            </button>
           </div>
           
-          <div className="space-y-3 text-sm text-blue-700">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+            {/* Filter Type */}
             <div>
-              <strong>Step 1:</strong> Create a <code className="bg-blue-100 px-2 py-1 rounded">public/data/</code> folder in your project
+              <label className="block text-sm font-medium text-slate-600 mb-1">
+                Filter By
+              </label>
+              <select
+                value={filters.type}
+                onChange={(e) => handleFilterChange('type', e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="date">Specific Date</option>
+                <option value="week">Week</option>
+                <option value="month">Month</option>
+                <option value="year">Year</option>
+              </select>
             </div>
+
+            {/* Date Picker */}
             <div>
-              <strong>Step 2:</strong> Copy your CSV files:
-              <ul className="ml-4 mt-1 space-y-1">
-                <li>• <code className="bg-blue-100 px-1 rounded">daily_summary.csv</code> - Daily aggregated metrics</li>
-                <li>• <code className="bg-blue-100 px-1 rounded">job_sessions.csv</code> - Individual job records</li>
-              </ul>
+              <label className="block text-sm font-medium text-slate-600 mb-1">
+                {filters.type === 'date' ? 'Date' : 
+                 filters.type === 'week' ? 'Week of' :
+                 filters.type === 'month' ? 'Month' : 'Year'}
+              </label>
+              <input
+                type="date"
+                value={filters.date}
+                onChange={(e) => handleFilterChange('date', e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              />
             </div>
+
+            {/* Material Type Filter */}
             <div>
-              <strong>Step 3:</strong> Refresh the page - the dashboard will automatically load your real data
+              <label className="block text-sm font-medium text-slate-600 mb-1">
+                Material Type
+              </label>
+              <select
+                value={filters.materialType}
+                onChange={(e) => handleFilterChange('materialType', e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="">All Materials</option>
+                <option value="Pan Dental">Pan Dental</option>
+                <option value="Denture Care">Denture Care</option>
+                <option value="hyperDENT">hyperDENT</option>
+              </select>
             </div>
+
+            {/* Status Filter */}
             <div>
-              <strong>Current Status:</strong> {error ? 'Using sample data (CSV files not found)' : 'Real data loaded successfully'}
+              <label className="block text-sm font-medium text-slate-600 mb-1">
+                Status
+              </label>
+              <select
+                value={filters.status}
+                onChange={(e) => handleFilterChange('status', e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="">All Status</option>
+                <option value="Completed">Completed</option>
+                <option value="Incomplete">Incomplete</option>
+                <option value="In Progress">In Progress</option>
+              </select>
+            </div>
+
+            {/* Search */}
+            <div>
+              <label className="block text-sm font-medium text-slate-600 mb-1">
+                Search
+              </label>
+              <div className="relative">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={filters.search}
+                  onChange={(e) => handleFilterChange('search', e.target.value)}
+                  placeholder="Search jobs..."
+                  className="w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
             </div>
           </div>
-        </section>
+
+          {/* Active Filter Display */}
+          {(filters.date || filters.materialType || filters.status || filters.search) && (
+            <div className="flex items-center space-x-2 text-sm text-slate-600">
+              <span>Showing jobs for:</span>
+              <span className="material-badge">{getFilterLabel()}</span>
+              {filters.materialType && (
+                <span className="material-badge">{filters.materialType}</span>
+              )}
+              {filters.status && (
+                <span className="success-badge">{filters.status}</span>
+              )}
+              {filters.search && (
+                <span className="error-badge">"{filters.search}"</span>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Results Summary */}
+        <div className="flex items-center justify-between text-sm text-slate-600">
+          <span>
+            Showing {startIndex + 1}-{Math.min(endIndex, filteredAndSortedJobs.length)} of {filteredAndSortedJobs.length} jobs
+          </span>
+          <span>
+            Page {currentPage} of {totalPages}
+          </span>
+        </div>
+
+        {/* Jobs Table */}
+        <div className="dashboard-card overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-slate-200">
+                  <th 
+                    className="text-left py-3 px-4 text-sm font-medium text-slate-600 uppercase cursor-pointer hover:bg-slate-50"
+                    onClick={() => handleSort('session_start')}
+                  >
+                    <div className="flex items-center space-x-1">
+                      <span>Date & Time</span>
+                      {sortField === 'session_start' && (
+                        <span className="text-blue-600">
+                          {sortDirection === 'asc' ? '↑' : '↓'}
+                        </span>
+                      )}
+                    </div>
+                  </th>
+                  <th className="text-left py-3 px-4 text-sm font-medium text-slate-600 uppercase">
+                    Session ID
+                  </th>
+                  <th 
+                    className="text-left py-3 px-4 text-sm font-medium text-slate-600 uppercase cursor-pointer hover:bg-slate-50"
+                    onClick={() => handleSort('material_type')}
+                  >
+                    <div className="flex items-center space-x-1">
+                      <span>Material</span>
+                      {sortField === 'material_type' && (
+                        <span className="text-blue-600">
+                          {sortDirection === 'asc' ? '↑' : '↓'}
+                        </span>
+                      )}
+                    </div>
+                  </th>
+                  <th className="text-left py-3 px-4 text-sm font-medium text-slate-600 uppercase">
+                    Color/Shade
+                  </th>
+                  <th 
+                    className="text-right py-3 px-4 text-sm font-medium text-slate-600 uppercase cursor-pointer hover:bg-slate-50"
+                    onClick={() => handleSort('duration_minutes')}
+                  >
+                    <div className="flex items-center justify-end space-x-1">
+                      <span>Duration</span>
+                      {sortField === 'duration_minutes' && (
+                        <span className="text-blue-600">
+                          {sortDirection === 'asc' ? '↑' : '↓'}
+                        </span>
+                      )}
+                    </div>
+                  </th>
+                  <th 
+                    className="text-center py-3 px-4 text-sm font-medium text-slate-600 uppercase cursor-pointer hover:bg-slate-50"
+                    onClick={() => handleSort('status')}
+                  >
+                    <div className="flex items-center justify-center space-x-1">
+                      <span>Status</span>
+                      {sortField === 'status' && (
+                        <span className="text-blue-600">
+                          {sortDirection === 'asc' ? '↑' : '↓'}
+                        </span>
+                      )}
+                    </div>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {currentJobs.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="text-center py-12">
+                      <FileText className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+                      <p className="text-slate-500">No jobs found matching your filters</p>
+                    </td>
+                  </tr>
+                ) : (
+                  currentJobs.map((job) => (
+                    <tr 
+                      key={job.session_id}
+                      className="border-b border-slate-100 hover:bg-slate-50 transition-colors"
+                    >
+                      <td className="py-4 px-4">
+                        <div className="text-sm">
+                          <div className="font-medium text-slate-900">
+                            {format(parseISO(job.start_date), 'MMM dd, yyyy')}
+                          </div>
+                          <div className="font-mono text-slate-600">
+                            {format(parseISO(job.session_start || job.start_date), 'HH:mm')}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-4 px-4 font-mono text-sm text-slate-800">
+                        #{job.session_id}
+                      </td>
+                      <td className="py-4 px-4">
+                        {job.material_type ? (
+                          <span className="material-badge">
+                            {job.material_type}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400">Unknown</span>
+                        )}
+                      </td>
+                      <td className="py-4 px-4 text-sm text-slate-700">
+                        {job.material_color || 'N/A'}
+                      </td>
+                      <td className="py-4 px-4 text-right font-mono text-sm text-slate-800">
+                        {job.duration_minutes ? `${job.duration_minutes.toFixed(1)} min` : 'N/A'}
+                      </td>
+                      <td className="py-4 px-4 text-center">
+                        <span className={
+                          job.status === 'Completed' ? 'success-badge' :
+                          job.status === 'Incomplete' ? 'error-badge' :
+                          'material-badge'
+                        }>
+                          {job.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between dashboard-card">
+            <button
+              onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+              disabled={currentPage === 1}
+              className="flex items-center space-x-2 px-3 py-2 text-sm text-slate-600 hover:text-slate-900 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              <span>Previous</span>
+            </button>
+
+            <div className="flex items-center space-x-2">
+              {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                const pageNum = Math.max(1, Math.min(totalPages - 4, currentPage - 2)) + i
+                return (
+                  <button
+                    key={pageNum}
+                    onClick={() => setCurrentPage(pageNum)}
+                    className={`px-3 py-2 text-sm rounded-lg ${
+                      currentPage === pageNum
+                        ? 'bg-blue-600 text-white'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {pageNum}
+                  </button>
+                )
+              })}
+            </div>
+
+            <button
+              onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+              disabled={currentPage === totalPages}
+              className="flex items-center space-x-2 px-3 py-2 text-sm text-slate-600 hover:text-slate-900 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span>Next</span>
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
-// Fallback sample data generator
-function generateFallbackData() {
-  const dailyData: DailyData[] = []
-  const today = new Date()
-  
-  for (let i = 30; i >= 0; i--) {
-    const date = new Date(today)
-    date.setDate(date.getDate() - i)
-    
-    const sessions = Math.floor(Math.random() * 15) + 5
-    const completed = Math.floor(sessions * (0.95 + Math.random() * 0.05))
-    
-    dailyData.push({
-      start_date: date.toISOString().split('T')[0],
-      total_sessions: sessions,
-      total_duration_minutes: sessions * 8.5,
-      avg_duration_minutes: 8.5,
-      completed_sessions: completed,
-      material_types: Math.floor(Math.random() * 3) + 1,
-      success_rate: (completed / sessions) * 100,
-      utilization_hours: sessions * 8.5 / 60,
-      total_jobs: sessions
-    })
-  }
-
-  const jobSessions: JobSession[] = []
+// Fallback sample data
+function generateFallbackJobs(): JobSession[] {
+  const jobs: JobSession[] = []
   const materials = ['Pan Dental', 'Denture Care', 'hyperDENT']
-  const colors = ['A1', 'A2', 'A3', 'WhiteWax']
+  const colors = ['A1', 'A2', 'A3', 'A4', 'WhiteWax']
+  const statuses: ('Completed' | 'Incomplete' | 'In Progress')[] = ['Completed', 'Incomplete', 'In Progress']
   
-  for (let i = 0; i < 50; i++) {
-    const date = new Date(today)
-    date.setDate(date.getDate() - Math.floor(Math.random() * 30))
-    date.setHours(9 + Math.floor(Math.random() * 8), Math.floor(Math.random() * 60))
+  for (let i = 1; i <= 100; i++) {
+    const date = new Date()
+    date.setDate(date.getDate() - Math.floor(Math.random() * 90)) // Last 90 days
+    date.setHours(8 + Math.floor(Math.random() * 10), Math.floor(Math.random() * 60))
     
-    jobSessions.push({
-      session_id: i + 1,
+    jobs.push({
+      session_id: 1000 + i,
       session_start: date.toISOString(),
       start_date: date.toISOString().split('T')[0],
       start_hour: date.getHours(),
       material_type: materials[Math.floor(Math.random() * materials.length)],
       material_color: colors[Math.floor(Math.random() * colors.length)],
-      status: Math.random() > 0.05 ? 'Completed' : 'Incomplete',
-      duration_minutes: 5 + Math.random() * 10,
+      status: statuses[Math.floor(Math.random() * statuses.length)],
+      duration_minutes: 5 + Math.random() * 25,
       job_count: 1
-    } as JobSession)
+    })
   }
-
-  return { dailyData, jobSessions }
+  
+  return jobs.sort((a, b) => 
+    new Date(b.session_start).getTime() - new Date(a.session_start).getTime()
+  )
 }
