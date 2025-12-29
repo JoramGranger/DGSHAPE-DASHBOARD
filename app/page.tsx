@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { Activity, CheckCircle, Clock, Layers, AlertTriangle } from 'lucide-react'
+import Navigation from '@/components/Navigation'
 import MetricCard from '@/components/MetricCard'
 import { JobTrendsChart, UtilizationChart, MaterialBreakdownChart } from '@/components/Charts'
 import TimeRangeSelector from '@/components/TimeRangeSelector'
@@ -113,6 +114,9 @@ export default function DashboardPage() {
               </div>
             </div>
           </div>
+          
+          {/* Navigation */}
+          <Navigation />
           
           <TimeRangeSelector 
             activeRange={timeRange}
